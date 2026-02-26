@@ -274,10 +274,9 @@ if [[ -z "${RALPH_ROLE:-}" ]]; then
   tmux new-session -d -s "$SESSION_NAME" \
     "RALPH_ROLE=main RALPH_STATUSFILE='$STATUSFILE' '$SELF' $QUOTED_ARGS"
 
-  # Split bottom pane for status bar, then force it to exactly 2 lines
-  tmux split-window -t "$SESSION_NAME" -v \
+  # Split bottom pane for status bar — born at 2 lines
+  tmux split-window -t "$SESSION_NAME" -v -l 2 \
     "RALPH_ROLE=status RALPH_STATUSFILE='$STATUSFILE' '$SELF' $QUOTED_ARGS"
-  tmux resize-pane -t "${SESSION_NAME}:.1" -y 2
 
   # Focus the top pane (the one with claude output)
   tmux select-pane -t "${SESSION_NAME}:.0"
@@ -409,8 +408,8 @@ for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
   echo "0" > "$TURN_FILE"
   EXIT_CODE=0
   claude "${CLAUDE_ARGS[@]}" 2>&1 | tee "$ITER_OUTFILE" | while IFS= read -r line; do
-    # Count assistant turns
-    if [[ "$line" == *'"type":"assistant"'* ]] || [[ "$line" == *'"type": "assistant"'* ]]; then
+    # Count tool-use turns (each tool_result = one completed turn)
+    if [[ "$line" == *'"type":"tool_result"'* ]] || [[ "$line" == *'"type": "tool_result"'* ]]; then
       count=$(<"$TURN_FILE")
       echo "$((count + 1))" > "$TURN_FILE"
     fi

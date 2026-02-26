@@ -54,7 +54,7 @@ ralph --kill [SESSION]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-i`, `--max-iterations` | `50` | Max loop iterations before ralph gives up. |
-| `-m`, `--max-turns` | `30` | Max turns (tool calls) per iteration. |
+| `-m`, `--max-turns` | `50` | Max turns (tool calls) per iteration. |
 | `--model` | `sonnet` | Claude model to use (passed to `claude --model`). |
 | `-s`, `--session` | `ralph-XXXX` | tmux session name. Auto-generated if omitted. |
 | `-l`, `--log-dir` | *(none)* | Directory for per-iteration log files. |

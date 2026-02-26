@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+# ralph — iterate Claude Code with a fresh context window each pass
+# Runs in a tmux session: top pane = Claude output, bottom pane = status bar.
+#
+# Usage: ralph -p "Your prompt here" [-i 50] [-m 30]
+#        ralph --attach [SESSION]
+#        ralph --list
+#        ralph --kill [SESSION]
+
+set -euo pipefail
+
+# ── defaults ──────────────────────────────────────────────────────────
+MAX_ITERATIONS=50
+MAX_TURNS=50
+PROMPT=""
+VERBOSE=1
+PROMISE_TAG="RALPH_LOOP_COMPLETE"
+LOGDIR=""
+SESSION_NAME=""
+ATTACH_TARGET=""
+KILL_TARGET=""
+
+# ── colors ────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GRN='\033[0;32m'
+YLW='\033[1;33m'
+CYN='\033[0;36m'
+DIM='\033[2m'
+BLD='\033[1m'
+RST='\033[0m'
+
+# ── usage ─────────────────────────────────────────────────────────────
+usage() {
+  cat <<'EOF'
+Usage: ralph -p PROMPT [OPTIONS]
+       ralph --attach [SESSION]
+       ralph --list
+       ralph --kill [SESSION]
+
+Required (for new loops):
+  -p, --prompt PROMPT       The task prompt. Define your own completion
+                            criteria — ralph appends instructions telling
+                            Claude how to signal "all done."
+
+Options:
+  -i, --max-iterations N    Max loop iterations (default: 50)
+  -m, --max-turns N         Max turns per iteration (default: 30)
+  -s, --session NAME        tmux session name (default: ralph-XXXX)
+  -l, --log-dir DIR         Save per-iteration logs to DIR
+  -v, --verbose             Pass --verbose to claude
+  -h, --help                Show this help
+
+Session management:
+  -a, --attach [SESSION]    Attach to a running session (latest if no name)
+  --list                    List active ralph sessions
+  --kill [SESSION]          Kill a session (latest if no name)
+
+Examples:
+  ralph -p "Read tasks.md, implement first unchecked item, check box.
+    Done = all boxes checked." -i 100
+
+  ralph --attach              # reattach (Ctrl-b d to detach)
+  ralph --list
+  ralph --kill ralph-a1b2
+EOF
+  exit "${1:-0}"
+}
+
+# ── session helpers ───────────────────────────────────────────────────
+ralph_sessions() {
+  tmux list-sessions -F '#{session_name} #{session_created} #{session_attached}' 2>/dev/null \
+    | grep '^ralph-' || true
+}
+
+latest_ralph_session() {
+  ralph_sessions | tail -1 | awk '{print $1}'
+}
+
+cmd_list() {
+  local sessions
+  sessions=$(ralph_sessions)
+  if [[ -z "$sessions" ]]; then
+    echo -e "${YLW}No active ralph sessions.${RST}"
+    exit 0
+  fi
+  echo -e "${CYN}Active ralph sessions:${RST}"
+  echo "$sessions" | while read -r name created attached; do
+    local when
+    when=$(date -d "@$created" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$created" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown")
+    local status="${DIM}(detached)${RST}"
+    [[ "$attached" -gt 0 ]] && status="${GRN}(attached)${RST}"
+    echo -e "  ${YLW}${name}${RST}  started ${when}  ${status}"
+  done
+  exit 0
+}
+
+cmd_attach() {
+  local target="${ATTACH_TARGET:-$(latest_ralph_session)}"
+  if [[ -z "$target" ]]; then
+    echo -e "${RED}No ralph sessions to attach to.${RST}" >&2
+    exit 1
+  fi
+  if ! tmux has-session -t "$target" 2>/dev/null; then
+    echo -e "${RED}Session '$target' not found.${RST}" >&2
+    cmd_list
+    exit 1
+  fi
+  exec tmux attach-session -t "$target"
+}
+
+cmd_kill() {
+  local target="${KILL_TARGET:-$(latest_ralph_session)}"
+  if [[ -z "$target" ]]; then
+    echo -e "${RED}No ralph sessions to kill.${RST}" >&2
+    exit 1
+  fi
+  if ! tmux has-session -t "$target" 2>/dev/null; then
+    echo -e "${RED}Session '$target' not found.${RST}" >&2
+    exit 1
+  fi
+  tmux kill-session -t "$target"
+  echo -e "${GRN}Killed session: ${YLW}${target}${RST}"
+  exit 0
+}
+
+# ── arg parsing ───────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--prompt)         PROMPT="$2";           shift 2 ;;
+    -i|--max-iterations) MAX_ITERATIONS="$2";   shift 2 ;;
+    -m|--max-turns)      MAX_TURNS="$2";        shift 2 ;;
+    -s|--session)        SESSION_NAME="$2";     shift 2 ;;
+    -l|--log-dir)        LOGDIR="$2";           shift 2 ;;
+    -v|--verbose)        VERBOSE=1;             shift ;;
+    -a|--attach)
+      ATTACH_TARGET="${2:-}"
+      [[ -n "${2:-}" && "${2:0:1}" != "-" ]] && shift
+      shift; cmd_attach ;;
+    --list)              shift; cmd_list ;;
+    --kill)
+      KILL_TARGET="${2:-}"
+      [[ -n "${2:-}" && "${2:0:1}" != "-" ]] && shift
+      shift; cmd_kill ;;
+    -h|--help)           usage 0 ;;
+    *)
+      echo -e "${RED}Error:${RST} Unknown option: $1" >&2
+      usage 1 ;;
+  esac
+done
+
+if [[ -z "$PROMPT" ]]; then
+  echo -e "${RED}Error:${RST} --prompt is required." >&2
+  usage 1
+fi
+
+# ══════════════════════════════════════════════════════════════════════
+# ROLE DISPATCH — this script plays 3 roles depending on env vars:
+#   (no env)            → LAUNCHER: creates tmux, splits panes, attaches
+#   RALPH_ROLE=main     → MAIN LOOP: top pane, runs claude iterations
+#   RALPH_ROLE=status   → STATUS BAR: bottom pane, 1-line live display
+# ══════════════════════════════════════════════════════════════════════
+
+# ──────────────────────────────────────────────────────────────────────
+# STATUS BAR (bottom pane)
+# ──────────────────────────────────────────────────────────────────────
+if [[ "${RALPH_ROLE:-}" == "status" ]]; then
+  STATUSFILE="${RALPH_STATUSFILE:?}"
+  TURN_FILE="/tmp/ralph-turns-$(basename "$STATUSFILE" | sed 's/ralph-status-//')"
+
+  # Hide cursor, clear line
+  tput civis 2>/dev/null || true
+  trap 'tput cnorm 2>/dev/null || true' EXIT
+
+  while true; do
+    if [[ -f "$STATUSFILE" ]]; then
+      # Read status fields
+      source "$STATUSFILE" 2>/dev/null || true
+
+      NOW=$(date +%s)
+      ELAPSED=$(( NOW - ${ST_START:-$NOW} ))
+      ELAPSED_FMT="$(printf '%dm%02ds' $((ELAPSED/60)) $((ELAPSED%60)))"
+
+      ITER_ELAPSED=""
+      if [[ -n "${ST_ITER_START:-}" && "${ST_STATE:-}" == "running" ]]; then
+        IE=$(( NOW - ST_ITER_START ))
+        TURNS=$(<"$TURN_FILE" 2>/dev/null || echo 0)
+        ITER_ELAPSED=" │ this iter: $(printf '%dm%02ds' $((IE/60)) $((IE%60))), ${TURNS}/${ST_MAX_TURNS:-50}t"
+      fi
+
+      LAST_FMT=""
+      if [[ -n "${ST_LAST_DURATION:-}" ]]; then
+        LAST_FMT=" │ last: ${ST_LAST_DURATION}"
+      fi
+
+      STATE_ICON="⏳"
+      STATE_COLOR="$YLW"
+      case "${ST_STATE:-}" in
+        running)   STATE_ICON="▶"; STATE_COLOR="$CYN" ;;
+        done)      STATE_ICON="✔"; STATE_COLOR="$GRN" ;;
+        failed)    STATE_ICON="✘"; STATE_COLOR="$RED" ;;
+        breaker)   STATE_ICON="⚡"; STATE_COLOR="$RED" ;;
+        maxed)     STATE_ICON="⊘"; STATE_COLOR="$RED" ;;
+      esac
+
+      LINE="${STATE_COLOR}${STATE_ICON}${RST}"
+      LINE+=" ${BLD}${ST_SESSION:-ralph}${RST}"
+      LINE+=" │ iter ${YLW}${ST_ITER:-0}${RST}/${ST_MAX:-0}"
+      LINE+=" │ ✔ ${GRN}${ST_DONE:-0}${RST} done"
+      LINE+=" │ ⏱ ${ELAPSED_FMT}${ITER_ELAPSED}${LAST_FMT}"
+
+      if [[ "${ST_FAILURES:-0}" -gt 0 ]]; then
+        LINE+=" │ ${RED}${ST_FAILURES} fail${RST}"
+      fi
+
+      # Move to top of pane, clear both lines, print status + help
+      printf '\033[H\033[2K'
+      echo -ne "$LINE"
+      printf '\n\033[2K'
+      echo -ne "${DIM}Ctrl-b d detach │ Ctrl-b ↑↓ switch pane │ Ctrl-b [ scroll │ ralph --attach / --list / --kill${RST}"
+    fi
+    sleep 1
+  done
+  exit 0
+fi
+
+# ──────────────────────────────────────────────────────────────────────
+# LAUNCHER (no RALPH_ROLE set — first invocation)
+# ──────────────────────────────────────────────────────────────────────
+if [[ -z "${RALPH_ROLE:-}" ]]; then
+  if ! command -v tmux &>/dev/null; then
+    echo -e "${RED}Error:${RST} tmux is not installed." >&2
+    exit 1
+  fi
+
+  # Generate session name
+  if [[ -z "$SESSION_NAME" ]]; then
+    SESSION_NAME="ralph-$(head -c 4 /dev/urandom | xxd -p | head -c 4)"
+  fi
+
+  # Status file shared between panes
+  STATUSFILE="/tmp/ralph-status-${SESSION_NAME}"
+  echo "" > "$STATUSFILE"
+
+  SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+  # Build args to pass through
+  INNER_ARGS=()
+  INNER_ARGS+=(-p "$PROMPT")
+  INNER_ARGS+=(-i "$MAX_ITERATIONS")
+  INNER_ARGS+=(-m "$MAX_TURNS")
+  [[ -n "$LOGDIR" ]]       && INNER_ARGS+=(-l "$LOGDIR")
+  [[ "$VERBOSE" -eq 1 ]]   && INNER_ARGS+=(-v)
+  INNER_ARGS+=(-s "$SESSION_NAME")
+
+  # Quote args safely for shell embedding
+  quote_args() {
+    local quoted=""
+    for arg in "$@"; do
+      quoted+="'${arg//\'/\'\\\'\'}' "
+    done
+    echo "$quoted"
+  }
+
+  QUOTED_ARGS=$(quote_args "${INNER_ARGS[@]}")
+
+  # Create session with main loop in top pane
+  tmux new-session -d -s "$SESSION_NAME" \
+    "RALPH_ROLE=main RALPH_STATUSFILE='$STATUSFILE' '$SELF' $QUOTED_ARGS"
+
+  # Split bottom pane for status bar, then force it to exactly 2 lines
+  tmux split-window -t "$SESSION_NAME" -v \
+    "RALPH_ROLE=status RALPH_STATUSFILE='$STATUSFILE' '$SELF' $QUOTED_ARGS"
+  tmux resize-pane -t "${SESSION_NAME}:.1" -y 2
+
+  # Focus the top pane (the one with claude output)
+  tmux select-pane -t "${SESSION_NAME}:.0"
+
+  # Session options
+  tmux set-option -t "$SESSION_NAME" remain-on-exit on
+  tmux set-option -t "$SESSION_NAME" history-limit 50000
+
+  # Remove tmux status bar — our bottom pane IS the status
+  tmux set-option -t "$SESSION_NAME" status off
+
+  echo -e "${CYN}╔══════════════════════════════════════════════╗${RST}"
+  echo -e "${CYN}║  ralph launched                              ║${RST}"
+  echo -e "${CYN}╠══════════════════════════════════════════════╣${RST}"
+  echo -e "${CYN}║${RST} Session  : ${YLW}${SESSION_NAME}${RST}"
+  echo -e "${CYN}║${RST} Attach   : ${GRN}ralph --attach${RST}"
+  echo -e "${CYN}║${RST} Detach   : ${DIM}Ctrl-b d${RST}"
+  echo -e "${CYN}║${RST} Kill     : ${RED}ralph --kill${RST}"
+  [[ -n "$LOGDIR" ]] && \
+  echo -e "${CYN}║${RST} Logs     : ${DIM}${LOGDIR}/${RST}"
+  echo -e "${CYN}╚══════════════════════════════════════════════╝${RST}"
+  echo ""
+  echo -e "Attaching... ${DIM}(Ctrl-b d to detach)${RST}"
+  sleep 0.3
+  exec tmux attach-session -t "$SESSION_NAME"
+fi
+
+# ──────────────────────────────────────────────────────────────────────
+# MAIN LOOP (RALPH_ROLE=main — top pane)
+# ──────────────────────────────────────────────────────────────────────
+STATUSFILE="${RALPH_STATUSFILE:?}"
+
+# ── write_status: update the shared status file ──
+write_status() {
+  cat > "$STATUSFILE" <<EOF
+ST_SESSION="$SESSION_NAME"
+ST_ITER="$1"
+ST_MAX="$MAX_ITERATIONS"
+ST_DONE="$2"
+ST_START="$3"
+ST_ITER_START="$4"
+ST_LAST_DURATION="$5"
+ST_FAILURES="$6"
+ST_STATE="$7"
+ST_MAX_TURNS="$MAX_TURNS"
+EOF
+}
+
+# ── build the full prompt ─────────────────────────────────────────────
+FULL_PROMPT="${PROMPT}
+
+--- LOOP CONTROLLER INSTRUCTIONS (injected automatically) ---
+You are running inside an automated loop. Each iteration gives you a
+fresh context window — you have no memory of prior iterations. Re-read
+any task lists or state files from disk at the start of every iteration.
+
+RULES:
+1. Do ONE unit of work per iteration (one task, one item, one file —
+   whatever granularity the prompt above defines).
+2. Persist all progress to disk (commits, file edits, checked boxes)
+   so the next iteration can see it.
+3. After completing your one unit of work, evaluate whether ALL work
+   described in the prompt is now finished.
+4. If work remains, end your response with a short status summary.
+   Do NOT output the completion tag.
+5. If and ONLY if every task/item is genuinely complete with nothing
+   remaining, output EXACTLY this completion tag as the very last
+   thing in your response:
+   <promise>${PROMISE_TAG}</promise>
+--- END LOOP CONTROLLER INSTRUCTIONS ---"
+
+# ── logging setup ─────────────────────────────────────────────────────
+if [[ -n "$LOGDIR" ]]; then
+  mkdir -p "$LOGDIR"
+fi
+
+# ── claude args ───────────────────────────────────────────────────────
+CLAUDE_ARGS=(-p "$FULL_PROMPT" --max-turns "$MAX_TURNS")
+CLAUDE_ARGS+=(--output-format stream-json --verbose)
+
+# jq is needed to parse stream-json into readable output
+if ! command -v jq &>/dev/null; then
+  echo -e "${RED}Error:${RST} jq is required (apt install jq / brew install jq)" >&2
+  exec bash --norc -i
+fi
+
+# jq filter: extract human-readable streaming output from NDJSON
+JQ_FILTER='
+  if .type == "assistant" then
+    (.message.content[]? |
+      if .type == "text" then "\n" + .text + "\n"
+      elif .type == "tool_use" then "\n\u001b[36m⚡ \(.name)\u001b[0m \(.input | tostring | .[0:120])\n"
+      else empty end) // empty
+  elif .type == "result" then
+    "\n\u001b[32m✔ iteration complete\u001b[0m\n"
+  else empty end
+'
+
+# ── go ────────────────────────────────────────────────────────────────
+START_TIME=$(date +%s)
+COMPLETED_COUNT=0
+CONSECUTIVE_FAILURES=0
+MAX_CONSECUTIVE_FAILURES=3
+TURN_FILE="/tmp/ralph-turns-${SESSION_NAME}"
+echo "0" > "$TURN_FILE"
+trap 'rm -f "$TURN_FILE"' EXIT
+
+write_status 0 0 "$START_TIME" "" "" 0 "running"
+
+for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
+  ITER_START=$(date +%s)
+  write_status "$ITER" "$COMPLETED_COUNT" "$START_TIME" "$ITER_START" "${LAST_DUR:-}" "$CONSECUTIVE_FAILURES" "running"
+
+  echo ""
+  echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
+  echo -e "${CYN}  iteration ${YLW}${ITER}${CYN} / ${MAX_ITERATIONS}    $(date '+%Y-%m-%d %H:%M:%S')${RST}"
+  echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
+  echo ""
+
+  LOGFILE=""
+  if [[ -n "$LOGDIR" ]]; then
+    LOGFILE="${LOGDIR}/iteration-$(printf '%03d' "$ITER").log"
+  fi
+
+  # Run claude — stream-json for live output, tee raw NDJSON to file for promise check
+  ITER_OUTFILE=$(mktemp /tmp/ralph-iter-XXXXX)
+  echo "0" > "$TURN_FILE"
+  EXIT_CODE=0
+  claude "${CLAUDE_ARGS[@]}" 2>&1 | tee "$ITER_OUTFILE" | while IFS= read -r line; do
+    # Count assistant turns
+    if [[ "$line" == *'"type":"assistant"'* ]] || [[ "$line" == *'"type": "assistant"'* ]]; then
+      count=$(<"$TURN_FILE")
+      echo "$((count + 1))" > "$TURN_FILE"
+    fi
+    # Display formatted output
+    echo "$line" | jq --unbuffered -rj "$JQ_FILTER" 2>/dev/null
+  done || EXIT_CODE=$?
+  TURNS_USED=$(<"$TURN_FILE" 2>/dev/null || echo 0)
+  OUTPUT=$(<"$ITER_OUTFILE")
+  rm -f "$ITER_OUTFILE"
+
+  ITER_END=$(date +%s)
+  ITER_ELAPSED=$(( ITER_END - ITER_START ))
+  LAST_DUR="$(printf '%dm%02ds' $((ITER_ELAPSED/60)) $((ITER_ELAPSED%60)))"
+
+  # Save log
+  if [[ -n "$LOGFILE" ]]; then
+    {
+      echo "=== Iteration $ITER  |  $(date -Iseconds)  |  ${ITER_ELAPSED}s  |  exit=$EXIT_CODE ==="
+      echo "$OUTPUT"
+    } > "$LOGFILE"
+  fi
+
+  # ── Completion check ──
+  if echo "$OUTPUT" | grep -qF "<promise>${PROMISE_TAG}</promise>"; then
+    COMPLETED_COUNT=$(( COMPLETED_COUNT + 1 ))
+    TOTAL=$(( $(date +%s) - START_TIME ))
+    write_status "$ITER" "$COMPLETED_COUNT" "$START_TIME" "" "$LAST_DUR" 0 "done"
+
+    echo ""
+    echo -e "${GRN}╔══════════════════════════════════════════════╗${RST}"
+    echo -e "${GRN}║  ✔  ALL TASKS COMPLETE                       ║${RST}"
+    echo -e "${GRN}╠══════════════════════════════════════════════╣${RST}"
+    echo -e "${GRN}║${RST} Iterations : ${YLW}${ITER}${RST}"
+    echo -e "${GRN}║${RST} Total time : ${YLW}$((TOTAL/60))m $((TOTAL%60))s${RST}"
+    [[ -n "$LOGDIR" ]] && \
+    echo -e "${GRN}║${RST} Logs       : ${DIM}${LOGDIR}/${RST}"
+    echo -e "${GRN}╚══════════════════════════════════════════════╝${RST}"
+    echo ""
+    echo -e "${DIM}Ctrl-b d to detach  |  exit to close session${RST}"
+    exec bash --norc -i
+  fi
+
+  # Iteration succeeded — count it
+  if [[ "$EXIT_CODE" -eq 0 ]]; then
+    COMPLETED_COUNT=$(( COMPLETED_COUNT + 1 ))
+    CONSECUTIVE_FAILURES=0
+  else
+    CONSECUTIVE_FAILURES=$(( CONSECUTIVE_FAILURES + 1 ))
+    echo -e "  ${YLW}⚠  Claude exited ${EXIT_CODE}  (${CONSECUTIVE_FAILURES}/${MAX_CONSECUTIVE_FAILURES} consecutive failures)${RST}"
+    if [[ "$CONSECUTIVE_FAILURES" -ge "$MAX_CONSECUTIVE_FAILURES" ]]; then
+      write_status "$ITER" "$COMPLETED_COUNT" "$START_TIME" "" "$LAST_DUR" "$CONSECUTIVE_FAILURES" "breaker"
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════╗${RST}"
+      echo -e "${RED}║  ✘  CIRCUIT BREAKER — ${CONSECUTIVE_FAILURES} failures in a row       ║${RST}"
+      echo -e "${RED}╚══════════════════════════════════════════════╝${RST}"
+      exec bash --norc -i
+    fi
+    sleep 5
+  fi
+
+  write_status "$ITER" "$COMPLETED_COUNT" "$START_TIME" "" "$LAST_DUR" "$CONSECUTIVE_FAILURES" "running"
+done
+
+# ── Exhausted ──
+TOTAL=$(( $(date +%s) - START_TIME ))
+write_status "$MAX_ITERATIONS" "$COMPLETED_COUNT" "$START_TIME" "" "$LAST_DUR" "$CONSECUTIVE_FAILURES" "maxed"
+echo ""
+echo -e "${RED}╔══════════════════════════════════════════════╗${RST}"
+echo -e "${RED}║  ✘  MAX ITERATIONS REACHED                   ║${RST}"
+echo -e "${RED}╠══════════════════════════════════════════════╣${RST}"
+echo -e "${RED}║${RST} Ran        : ${YLW}${MAX_ITERATIONS} iterations${RST}"
+echo -e "${RED}║${RST} Total time : ${YLW}$((TOTAL/60))m $((TOTAL%60))s${RST}"
+echo -e "${RED}╚══════════════════════════════════════════════╝${RST}"
+exec bash --norc -i

@@ -222,7 +222,7 @@ if [[ "${RALPH_ROLE:-}" == "status" ]]; then
       printf '\033[H\033[2K'
       echo -ne "$LINE"
       printf '\n\033[2K'
-      echo -ne "${DIM}Ctrl-b d detach │ Ctrl-b ↑↓ switch pane │ Ctrl-b [ scroll │ ralph --attach / --list / --kill${RST}"
+      echo -ne "${DIM}Ctrl-b d detach │ Ctrl-b ↑↓ switch pane │ Ctrl-b [ scroll │ Ctrl-b x close pane │ Ctrl-b & close session${RST}"
     fi
     sleep 1
   done

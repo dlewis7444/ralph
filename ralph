@@ -2,7 +2,7 @@
 # ralph — iterate Claude Code with a fresh context window each pass
 # Runs in a tmux session: top pane = Claude output, bottom pane = status bar.
 #
-# Usage: ralph -p "Your prompt here" [-i 50] [-m 30]
+# Usage: ralph -p "Your prompt here" [-i 50] [-m 30] [--model sonnet]
 #        ralph --attach [SESSION]
 #        ralph --list
 #        ralph --kill [SESSION]
@@ -19,6 +19,7 @@ LOGDIR=""
 SESSION_NAME=""
 ATTACH_TARGET=""
 KILL_TARGET=""
+MODEL="sonnet"
 
 # ── colors ────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -45,6 +46,7 @@ Required (for new loops):
 Options:
   -i, --max-iterations N    Max loop iterations (default: 50)
   -m, --max-turns N         Max turns per iteration (default: 30)
+  --model MODEL             Claude model to use (default: sonnet)
   -s, --session NAME        tmux session name (default: ralph-XXXX)
   -l, --log-dir DIR         Save per-iteration logs to DIR
   -v, --verbose             Pass --verbose to claude
@@ -58,6 +60,8 @@ Session management:
 Examples:
   ralph -p "Read tasks.md, implement first unchecked item, check box.
     Done = all boxes checked." -i 100
+
+  ralph -p "Fix all lint errors in src/" --model opus -i 20
 
   ralph --attach              # reattach (Ctrl-b d to detach)
   ralph --list
@@ -129,6 +133,7 @@ while [[ $# -gt 0 ]]; do
     -p|--prompt)         PROMPT="$2";           shift 2 ;;
     -i|--max-iterations) MAX_ITERATIONS="$2";   shift 2 ;;
     -m|--max-turns)      MAX_TURNS="$2";        shift 2 ;;
+    --model)             MODEL="$2";            shift 2 ;;
     -s|--session)        SESSION_NAME="$2";     shift 2 ;;
     -l|--log-dir)        LOGDIR="$2";           shift 2 ;;
     -v|--verbose)        VERBOSE=1;             shift ;;
@@ -204,6 +209,7 @@ if [[ "${RALPH_ROLE:-}" == "status" ]]; then
 
       LINE="${STATE_COLOR}${STATE_ICON}${RST}"
       LINE+=" ${BLD}${ST_SESSION:-ralph}${RST}"
+      LINE+=" │ ${CYN}${ST_MODEL:-sonnet}${RST}"
       LINE+=" │ iter ${YLW}${ST_ITER:-0}${RST}/${ST_MAX:-0}"
       LINE+=" │ ✔ ${GRN}${ST_DONE:-0}${RST} done"
       LINE+=" │ ⏱ ${ELAPSED_FMT}${ITER_ELAPSED}${LAST_FMT}"
@@ -248,6 +254,7 @@ if [[ -z "${RALPH_ROLE:-}" ]]; then
   INNER_ARGS+=(-p "$PROMPT")
   INNER_ARGS+=(-i "$MAX_ITERATIONS")
   INNER_ARGS+=(-m "$MAX_TURNS")
+  INNER_ARGS+=(--model "$MODEL")
   [[ -n "$LOGDIR" ]]       && INNER_ARGS+=(-l "$LOGDIR")
   [[ "$VERBOSE" -eq 1 ]]   && INNER_ARGS+=(-v)
   INNER_ARGS+=(-s "$SESSION_NAME")
@@ -256,7 +263,7 @@ if [[ -z "${RALPH_ROLE:-}" ]]; then
   quote_args() {
     local quoted=""
     for arg in "$@"; do
-      quoted+="'${arg//\'/\'\\\'\'}' "
+      quoted+="'${arg//\'/\'\\\'\'\'}' "
     done
     echo "$quoted"
   }
@@ -286,6 +293,7 @@ if [[ -z "${RALPH_ROLE:-}" ]]; then
   echo -e "${CYN}║  ralph launched                              ║${RST}"
   echo -e "${CYN}╠══════════════════════════════════════════════╣${RST}"
   echo -e "${CYN}║${RST} Session  : ${YLW}${SESSION_NAME}${RST}"
+  echo -e "${CYN}║${RST} Model    : ${CYN}${MODEL}${RST}"
   echo -e "${CYN}║${RST} Attach   : ${GRN}ralph --attach${RST}"
   echo -e "${CYN}║${RST} Detach   : ${DIM}Ctrl-b d${RST}"
   echo -e "${CYN}║${RST} Kill     : ${RED}ralph --kill${RST}"
@@ -316,6 +324,7 @@ ST_LAST_DURATION="$5"
 ST_FAILURES="$6"
 ST_STATE="$7"
 ST_MAX_TURNS="$MAX_TURNS"
+ST_MODEL="$MODEL"
 EOF
 }
 
@@ -348,7 +357,7 @@ if [[ -n "$LOGDIR" ]]; then
 fi
 
 # ── claude args ───────────────────────────────────────────────────────
-CLAUDE_ARGS=(-p "$FULL_PROMPT" --max-turns "$MAX_TURNS")
+CLAUDE_ARGS=(-p "$FULL_PROMPT" --max-turns "$MAX_TURNS" --model "$MODEL")
 CLAUDE_ARGS+=(--output-format stream-json --verbose)
 
 # jq is needed to parse stream-json into readable output
@@ -386,7 +395,7 @@ for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
 
   echo ""
   echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
-  echo -e "${CYN}  iteration ${YLW}${ITER}${CYN} / ${MAX_ITERATIONS}    $(date '+%Y-%m-%d %H:%M:%S')${RST}"
+  echo -e "${CYN}  iteration ${YLW}${ITER}${CYN} / ${MAX_ITERATIONS}  │  ${CYN}model: ${YLW}${MODEL}${CYN}  │  $(date '+%Y-%m-%d %H:%M:%S')${RST}"
   echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
   echo ""
 
@@ -419,7 +428,7 @@ for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
   # Save log
   if [[ -n "$LOGFILE" ]]; then
     {
-      echo "=== Iteration $ITER  |  $(date -Iseconds)  |  ${ITER_ELAPSED}s  |  exit=$EXIT_CODE ==="
+      echo "=== Iteration $ITER  |  $(date -Iseconds)  |  ${ITER_ELAPSED}s  |  exit=$EXIT_CODE  |  model=$MODEL ==="
       echo "$OUTPUT"
     } > "$LOGFILE"
   fi
@@ -435,6 +444,7 @@ for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
     echo -e "${GRN}║  ✔  ALL TASKS COMPLETE                       ║${RST}"
     echo -e "${GRN}╠══════════════════════════════════════════════╣${RST}"
     echo -e "${GRN}║${RST} Iterations : ${YLW}${ITER}${RST}"
+    echo -e "${GRN}║${RST} Model      : ${CYN}${MODEL}${RST}"
     echo -e "${GRN}║${RST} Total time : ${YLW}$((TOTAL/60))m $((TOTAL%60))s${RST}"
     [[ -n "$LOGDIR" ]] && \
     echo -e "${GRN}║${RST} Logs       : ${DIM}${LOGDIR}/${RST}"
@@ -473,6 +483,7 @@ echo -e "${RED}╔════════════════════�
 echo -e "${RED}║  ✘  MAX ITERATIONS REACHED                   ║${RST}"
 echo -e "${RED}╠══════════════════════════════════════════════╣${RST}"
 echo -e "${RED}║${RST} Ran        : ${YLW}${MAX_ITERATIONS} iterations${RST}"
+echo -e "${RED}║${RST} Model      : ${CYN}${MODEL}${RST}"
 echo -e "${RED}║${RST} Total time : ${YLW}$((TOTAL/60))m $((TOTAL%60))s${RST}"
 echo -e "${RED}╚══════════════════════════════════════════════╝${RST}"
 exec bash --norc -i

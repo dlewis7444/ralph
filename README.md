@@ -133,6 +133,10 @@ If Claude outputs the tag, ralph stops and shows a summary. If not, it loops.
 
 Three consecutive non-zero exit codes from Claude and ralph trips the circuit breaker — stops the loop and drops you into a shell so you can investigate. This prevents burning iterations on a broken environment.
 
+## Nested tmux
+
+If you launch ralph from inside an existing tmux session, ralph will warn you and ask for confirmation before continuing. The issue is that `Ctrl-b` keybindings are captured by the outer session — to send keys to ralph's inner session you'd need `Ctrl-b b` (double-prefix). Running ralph from a plain terminal window avoids this entirely.
+
 ## Tips
 
 - **Fresh context is the point.** Each iteration starts clean. Design your prompts so Claude reads state from disk, not from memory.

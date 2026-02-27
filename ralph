@@ -238,6 +238,21 @@ if [[ -z "${RALPH_ROLE:-}" ]]; then
     exit 1
   fi
 
+  if [[ -n "${TMUX:-}" ]]; then
+    echo -e "${YLW}Warning:${RST} You are already inside a tmux session."
+    echo -e "         Ralph will create a nested tmux session, which means ${BLD}Ctrl-b${RST}"
+    echo -e "         will be captured by the outer session. You will need to"
+    echo -e "         press ${BLD}Ctrl-b b${RST} to send keys to Ralph's inner session."
+    echo -e "         Consider running Ralph from outside tmux instead."
+    echo ""
+    read -r -p "Continue anyway? [y/N] " _confirm
+    if [[ ! "${_confirm}" =~ ^[Yy]$ ]]; then
+      echo "Aborted."
+      exit 0
+    fi
+    echo ""
+  fi
+
   # Generate session name
   if [[ -z "$SESSION_NAME" ]]; then
     SESSION_NAME="ralph-$(head -c 4 /dev/urandom | xxd -p | head -c 4)"

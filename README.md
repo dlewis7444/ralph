@@ -22,6 +22,15 @@ Ctrl-b d detach │ Ctrl-b ↑↓ switch pane │ Ctrl-b [ scroll │ ralph --at
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
 - `tmux`
 - `jq`
+- `xxd` (usually bundled with `vim`; used for session name generation)
+
+```bash
+# apt
+sudo apt install tmux jq xxd
+
+# dnf (xxd ships in vim-common)
+sudo dnf install tmux jq vim-common
+```
 
 ## Install
 

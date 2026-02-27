@@ -69,6 +69,7 @@ ralph --kill [SESSION]
 | `-l`, `--log-dir` | *(none)* | Directory for per-iteration log files. |
 | `-v`, `--verbose` | on | Pass `--verbose` to claude. |
 | `--dry-run` | | Analyze the prompt with haiku and exit — no loop is started. |
+| `--no-preflight` | | Skip the haiku preflight prompt check (not recommended). |
 
 ### Session Management
 
@@ -117,7 +118,7 @@ ralph -p "Read tasks.md, implement first unchecked item, check box. Done = all b
 
 Haiku reports on: whether the completion criteria are clear and disk-verifiable, what the agent will likely do each iteration, and whether the prompt fits the one-task-per-iteration mechanic. No tmux session is created; ralph exits after the analysis.
 
-Ralph also runs a silent preflight check on every normal launch. If haiku flags a critical issue (missing or unverifiable completion criteria), it surfaces the finding and asks `[y/N]` before starting the loop. If nothing is wrong, it stays silent.
+Ralph also runs a preflight check on every normal launch — you'll see a brief "Checking prompt with haiku…" progress line. If haiku flags a critical issue (missing or unverifiable completion criteria), it surfaces the finding, offers to suggest improvements, and asks `[y/N]` before starting the loop. If nothing is wrong, the progress line clears and the loop starts normally. Use `--no-preflight` to skip this check (not recommended).
 
 ### Session management
 

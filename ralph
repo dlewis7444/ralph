@@ -99,7 +99,7 @@ cmd_list() {
 }
 
 cmd_attach() {
-  local target="${ATTACH_TARGET:-$(latest_ralph_session)}"
+  local target="${ATTACH_TARGET:-${SESSION_NAME:-$(latest_ralph_session)}}"
   if [[ -z "$target" ]]; then
     echo -e "${RED}No ralph sessions to attach to.${RST}" >&2
     exit 1
@@ -113,7 +113,7 @@ cmd_attach() {
 }
 
 cmd_kill() {
-  local target="${KILL_TARGET:-$(latest_ralph_session)}"
+  local target="${KILL_TARGET:-${SESSION_NAME:-$(latest_ralph_session)}}"
   if [[ -z "$target" ]]; then
     echo -e "${RED}No ralph sessions to kill.${RST}" >&2
     exit 1

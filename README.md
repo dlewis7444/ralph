@@ -68,6 +68,7 @@ ralph --kill [SESSION]
 | `-s`, `--session` | `ralph-XXXX` | tmux session name. Auto-generated if omitted. |
 | `-l`, `--log-dir` | *(none)* | Directory for per-iteration log files. |
 | `-v`, `--verbose` | on | Pass `--verbose` to claude. |
+| `--dry-run` | | Analyze the prompt with haiku and exit — no loop is started. |
 
 ### Session Management
 
@@ -105,6 +106,18 @@ ralph -p "Fix all type errors in src/" --model opus -i 20
 ```bash
 ralph -p "Refactor the auth module" -l ./logs --model haiku
 ```
+
+### Dry run
+
+Preview what ralph will do before committing to a full loop. Sends the complete prompt — including the injected loop controller instructions — to haiku for a quick coherency review:
+
+```bash
+ralph -p "Read tasks.md, implement first unchecked item, check box. Done = all boxes checked." --dry-run
+```
+
+Haiku reports on: whether the completion criteria are clear and disk-verifiable, what the agent will likely do each iteration, and whether the prompt fits the one-task-per-iteration mechanic. No tmux session is created; ralph exits after the analysis.
+
+Ralph also runs a silent preflight check on every normal launch. If haiku flags a critical issue (missing or unverifiable completion criteria), it surfaces the finding and asks `[y/N]` before starting the loop. If nothing is wrong, it stays silent.
 
 ### Session management
 

@@ -393,9 +393,9 @@ for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
   write_status "$ITER" "$COMPLETED_COUNT" "$START_TIME" "$ITER_START" "${LAST_DUR:-}" "$CONSECUTIVE_FAILURES" "running"
 
   echo ""
-  echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
+  echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
   echo -e "${CYN}  iteration ${YLW}${ITER}${CYN} / ${MAX_ITERATIONS}  │  ${CYN}model: ${YLW}${MODEL}${CYN}  │  $(date '+%Y-%m-%d %H:%M:%S')${RST}"
-  echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
+  echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
   echo ""
 
   LOGFILE=""

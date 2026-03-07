@@ -393,6 +393,9 @@ RALPH_SUGGEST_EOF
       fi
       echo ""
     fi
+  else
+    echo -e "${GRN}  ✔ Prompt looks okay.${RST}"
+    sleep 0.25
   fi
 
   # Generate session name
@@ -417,16 +420,15 @@ RALPH_SUGGEST_EOF
   [[ "$NO_PREFLIGHT" -eq 1 ]] && INNER_ARGS+=(--no-preflight)
   INNER_ARGS+=(-s "$SESSION_NAME")
 
-  # Quote args safely for shell embedding
-  quote_args() {
-    local quoted=""
-    for arg in "$@"; do
-      quoted+="'${arg//\'/\'\\\'\'\'}' "
-    done
-    echo "$quoted"
-  }
+  # Quote args safely for shell embedding (handles single quotes, spaces, newlines)
+  QUOTED_ARGS=$(printf '%q ' "${INNER_ARGS[@]}")
 
-  QUOTED_ARGS=$(quote_args "${INNER_ARGS[@]}")
+  # Clean up stale tmux socket so new-session can start a fresh server
+  _tmux_socket="${TMPDIR:-/tmp}/tmux-$(id -u)/default"
+  if [[ -S "$_tmux_socket" ]] && ! tmux ls &>/dev/null 2>&1; then
+    rm -f "$_tmux_socket"
+  fi
+  unset _tmux_socket
 
   # Create session with main loop in top pane
   tmux new-session -d -s "$SESSION_NAME" \

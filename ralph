@@ -178,7 +178,7 @@ Give concise, practical advice (under 200 words) on writing effective ralph prom
 5. Give a concrete example of a good ralph prompt
 RALPH_ADVICE_EOF
 )
-    claude -p "$ADVICE_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null \
+    claude -p "$ADVICE_META" --model "$CHK_MODEL" --max-turns 5 --output-format text 2>/dev/null \
       || echo -e "${YLW}(${CHK_MODEL} advice unavailable)${RST}"
     echo ""
   fi
@@ -328,7 +328,7 @@ RALPH_DRYMETA_EOF
     echo -e "${CYN}  dry run  │  model: ${YLW}${CHK_MODEL}${CYN}  │  prompt analysis${RST}"
     echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
     echo ""
-    claude -p "$DRY_RUN_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null \
+    claude -p "$DRY_RUN_META" --model "$CHK_MODEL" --max-turns 5 --output-format text 2>/dev/null \
       || echo -e "${YLW}(${CHK_MODEL} analysis unavailable)${RST}"
     echo ""
     echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
@@ -359,7 +359,7 @@ ${PROMPT}
 RALPH_PREFMETA_EOF
 )
     echo -e "${DIM}  Checking prompt with ${CHK_MODEL}…${RST}"
-    PREFLIGHT_OUT=$(claude -p "$PREFLIGHT_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null || true)
+    PREFLIGHT_OUT=$(claude -p "$PREFLIGHT_META" --model "$CHK_MODEL" --max-turns 5 --output-format text 2>/dev/null || true)
     if echo "$PREFLIGHT_OUT" | grep -qi 'PREFLIGHT_FAIL'; then
       PREFLIGHT_MSG=$(echo "$PREFLIGHT_OUT" | sed 's/^PREFLIGHT_FAIL:*[[:space:]]*//' | sed '/^[[:space:]]*$/d')
       echo -e "${YLW}⚠  Preflight:${RST} ${CHK_MODEL} flagged a potential issue with your prompt."
@@ -385,7 +385,7 @@ ${PROMPT}
 --- END USER PROMPT ---
 RALPH_SUGGEST_EOF
 )
-        claude -p "$SUGGEST_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null \
+        claude -p "$SUGGEST_META" --model "$CHK_MODEL" --max-turns 5 --output-format text 2>/dev/null \
           || echo -e "${YLW}(${CHK_MODEL} advice unavailable)${RST}"
         echo ""
       fi

@@ -198,7 +198,8 @@ fi
 # ──────────────────────────────────────────────────────────────────────
 if [[ "${RALPH_ROLE:-}" == "status" ]]; then
   STATUSFILE="${RALPH_STATUSFILE:?}"
-  TURN_FILE="/tmp/ralph-turns-$(basename "$STATUSFILE" | sed 's/ralph-status-//')"
+  TURN_FILE="/tmp/ralph-turns-${SESSION_NAME}"
+  INTERRUPT_FILE="/tmp/ralph-interrupt-${SESSION_NAME}"
 
   # Hide cursor, clear line
   tput civis 2>/dev/null || true
@@ -216,7 +217,7 @@ if [[ "${RALPH_ROLE:-}" == "status" ]]; then
       ITER_ELAPSED=""
       if [[ -n "${ST_ITER_START:-}" && "${ST_STATE:-}" == "running" ]]; then
         IE=$(( NOW - ST_ITER_START ))
-        TURNS=$(<"$TURN_FILE" 2>/dev/null || echo 0)
+        TURNS=$(cat "$TURN_FILE" 2>/dev/null); TURNS="${TURNS:-0}"
         ITER_ELAPSED=" │ this iter: $(printf '%dm%02ds' $((IE/60)) $((IE%60))), ${TURNS}/${ST_MAX_TURNS:-50}t"
       fi
 
@@ -250,7 +251,11 @@ if [[ "${RALPH_ROLE:-}" == "status" ]]; then
       printf '\033[H\033[2K'
       echo -ne "$LINE"
       printf '\n\033[2K'
-      echo -ne "${DIM}Ctrl-b d detach │ Ctrl-b ↑↓ switch pane │ Ctrl-b [ scroll │ Ctrl-b x close pane │ Ctrl-b & close session${RST}"
+      if [[ -f "$INTERRUPT_FILE" ]]; then
+        echo -ne "${RED}[ STOPPING AFTER THIS ITER — press Prefix+q again to cancel ]${RST}"
+      else
+        echo -ne "${DIM}Ctrl-b d detach │ Ctrl-b ↑↓ switch pane │ Ctrl-b [ scroll │ Prefix+q: stop after iter${RST}"
+      fi
     fi
     sleep 1
   done
@@ -433,7 +438,7 @@ RALPH_SUGGEST_EOF
   fi
   unset _tmux_socket
 
-  # Create session with main loop in top pane
+  # Create session at tmux default size first, then split
   tmux new-session -d -s "$SESSION_NAME" \
     "RALPH_ROLE=main RALPH_STATUSFILE='$STATUSFILE' '$SELF' $QUOTED_ARGS"
 
@@ -444,12 +449,22 @@ RALPH_SUGGEST_EOF
   # Focus the top pane (the one with claude output)
   tmux select-pane -t "${SESSION_NAME}:.0"
 
+  # Register graceful-interrupt key binding (Prefix+q toggles stop flag)
+  INTERRUPT_FILE="/tmp/ralph-interrupt-${SESSION_NAME}"
+  tmux bind-key -T prefix q run-shell \
+    "f='${INTERRUPT_FILE}'; [[ -f \"\$f\" ]] && rm -f \"\$f\" || touch \"\$f\""
+
   # Session options
   tmux set-option -t "$SESSION_NAME" remain-on-exit on
   tmux set-option -t "$SESSION_NAME" history-limit 50000
 
   # Remove tmux status bar — our bottom pane IS the status
   tmux set-option -t "$SESSION_NAME" status off
+
+  # When the main pane (pane 0) dies — i.e. user Ctrl-d's the post-loop shell —
+  # kill the whole session so both panes close cleanly.
+  tmux set-hook -t "${SESSION_NAME}:0.0" pane-died \
+    "kill-session -t '${SESSION_NAME}'"
 
   echo -e "${CYN}╔══════════════════════════════════════════════╗${RST}"
   echo -e "${CYN}║  ralph launched                              ║${RST}"
@@ -465,6 +480,21 @@ RALPH_SUGGEST_EOF
   echo ""
   echo -e "Attaching... ${DIM}(Ctrl-b d to detach)${RST}"
   sleep 0.3
+  # Resize session to actual terminal dimensions before attaching.
+  # Tabby doesn't send SIGWINCH on attach so without this the session stays
+  # at tmux's default 80x24 with blank space below.  After resize-window,
+  # panes are proportionally rescaled — so we immediately pin the status pane
+  # back to exactly 2 lines.  The window-layout-changed hook repeats that pin
+  # whenever GNOME Terminal (or anything else) sends its own resize after attach.
+  { IFS=' ' read -r _tl _tc; } < <(stty size 2>/dev/null) \
+    || { _tl=$(tput lines 2>/dev/null); _tc=$(tput cols 2>/dev/null); }
+  if [[ "${_tl:-0}" -gt 4 && "${_tc:-0}" -gt 0 ]]; then
+    tmux resize-window -t "$SESSION_NAME" -x "$_tc" -y "$_tl" 2>/dev/null || true
+    tmux resize-pane  -t "${SESSION_NAME}:.1" -y 2              2>/dev/null || true
+  fi
+  unset _tl _tc
+  tmux set-hook -t "${SESSION_NAME}:0" window-layout-changed \
+    "resize-pane -t '${SESSION_NAME}:.1' -y 2"
   exec tmux attach-session -t "$SESSION_NAME"
 fi
 
@@ -546,14 +576,22 @@ COMPLETED_COUNT=0
 CONSECUTIVE_FAILURES=0
 MAX_CONSECUTIVE_FAILURES=3
 TURN_FILE="/tmp/ralph-turns-${SESSION_NAME}"
+INTERRUPT_FILE="/tmp/ralph-interrupt-${SESSION_NAME}"
 echo "0" > "$TURN_FILE"
-trap 'rm -f "$TURN_FILE"' EXIT
+trap 'rm -f "$TURN_FILE" "$INTERRUPT_FILE"; tmux unbind-key -T prefix q 2>/dev/null || true; tmux set-hook -ut "${SESSION_NAME}:0" window-layout-changed 2>/dev/null || true' EXIT
 
 write_status 0 0 "$START_TIME" "" "" 0 "running"
 
 for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
   ITER_START=$(date +%s)
   write_status "$ITER" "$COMPLETED_COUNT" "$START_TIME" "$ITER_START" "${LAST_DUR:-}" "$CONSECUTIVE_FAILURES" "running"
+
+  if [[ -f "$INTERRUPT_FILE" ]]; then
+    rm -f "$INTERRUPT_FILE"
+    echo ""
+    echo -e "${YLW}[ralph] Graceful interrupt — stopping before iteration ${ITER}.${RST}"
+    exec bash --norc -i
+  fi
 
   echo ""
   echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
@@ -571,9 +609,9 @@ for (( ITER=1; ITER<=MAX_ITERATIONS; ITER++ )); do
   echo "0" > "$TURN_FILE"
   EXIT_CODE=0
   claude "${CLAUDE_ARGS[@]}" 2>&1 | tee "$ITER_OUTFILE" | while IFS= read -r line; do
-    # Count tool-use turns (each tool_result = one completed turn)
-    if [[ "$line" == *'"type":"tool_result"'* ]] || [[ "$line" == *'"type": "tool_result"'* ]]; then
-      count=$(<"$TURN_FILE")
+    # Count tool-use turns (tool_use in assistant messages = one agentic turn)
+    if [[ "$line" == *'"type":"tool_use"'* ]] || [[ "$line" == *'"type": "tool_use"'* ]]; then
+      count=$(cat "$TURN_FILE" 2>/dev/null); count="${count:-0}"
       echo "$((count + 1))" > "$TURN_FILE"
     fi
     # Display formatted output

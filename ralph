@@ -20,6 +20,7 @@ SESSION_NAME=""
 ATTACH_TARGET=""
 KILL_TARGET=""
 MODEL="sonnet"
+CHK_MODEL="haiku"
 DRY_RUN=0
 NO_PREFLIGHT=0
 
@@ -49,11 +50,12 @@ Options:
   -i, --max-iterations N    Max loop iterations (default: 50)
   -m, --max-turns N         Max turns per iteration (default: 30)
   --model MODEL             Claude model to use (default: sonnet)
+  --chk-model MODEL         Model for preflight/dry-run checks (default: haiku)
   -s, --session NAME        tmux session name (default: ralph-XXXX)
   -l, --log-dir DIR         Save per-iteration logs to DIR
   -v, --verbose             Pass --verbose to claude
-  --dry-run                 Analyze the prompt with haiku and exit — no loop is started.
-  --no-preflight            Skip the haiku preflight check (not recommended).
+  --dry-run                 Analyze the prompt with the check model and exit — no loop is started.
+  --no-preflight            Skip the preflight check (not recommended).
   -h, --help                Show this help
 
 Session management:
@@ -138,6 +140,7 @@ while [[ $# -gt 0 ]]; do
     -i|--max-iterations) MAX_ITERATIONS="$2";   shift 2 ;;
     -m|--max-turns)      MAX_TURNS="$2";        shift 2 ;;
     --model)             MODEL="$2";            shift 2 ;;
+    --chk-model)         CHK_MODEL="$2";        shift 2 ;;
     -s|--session)        SESSION_NAME="$2";     shift 2 ;;
     -l|--log-dir)        LOGDIR="$2";           shift 2 ;;
     -v|--verbose)        VERBOSE=1;             shift ;;
@@ -175,8 +178,8 @@ Give concise, practical advice (under 200 words) on writing effective ralph prom
 5. Give a concrete example of a good ralph prompt
 RALPH_ADVICE_EOF
 )
-    claude -p "$ADVICE_META" --model haiku --max-turns 1 --output-format text 2>/dev/null \
-      || echo -e "${YLW}(haiku advice unavailable)${RST}"
+    claude -p "$ADVICE_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null \
+      || echo -e "${YLW}(${CHK_MODEL} advice unavailable)${RST}"
     echo ""
   fi
   echo -e "${RED}Error:${RST} --prompt is required." >&2
@@ -322,11 +325,11 @@ ${FULL_PROMPT_PREVIEW}
 RALPH_DRYMETA_EOF
 )
     echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
-    echo -e "${CYN}  dry run  │  model: ${YLW}haiku${CYN}  │  prompt analysis${RST}"
+    echo -e "${CYN}  dry run  │  model: ${YLW}${CHK_MODEL}${CYN}  │  prompt analysis${RST}"
     echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
     echo ""
-    claude -p "$DRY_RUN_META" --model haiku --max-turns 1 --output-format text 2>/dev/null \
-      || echo -e "${YLW}(haiku analysis unavailable)${RST}"
+    claude -p "$DRY_RUN_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null \
+      || echo -e "${YLW}(${CHK_MODEL} analysis unavailable)${RST}"
     echo ""
     echo -e "${CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
     exit 0
@@ -355,15 +358,15 @@ ${PROMPT}
 --- END PROMPT DATA ---
 RALPH_PREFMETA_EOF
 )
-    echo -e "${DIM}  Checking prompt with haiku…${RST}"
-    PREFLIGHT_OUT=$(claude -p "$PREFLIGHT_META" --model haiku --max-turns 1 --output-format text 2>/dev/null || true)
+    echo -e "${DIM}  Checking prompt with ${CHK_MODEL}…${RST}"
+    PREFLIGHT_OUT=$(claude -p "$PREFLIGHT_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null || true)
     if echo "$PREFLIGHT_OUT" | grep -qi 'PREFLIGHT_FAIL'; then
       PREFLIGHT_MSG=$(echo "$PREFLIGHT_OUT" | sed 's/^PREFLIGHT_FAIL:*[[:space:]]*//' | sed '/^[[:space:]]*$/d')
-      echo -e "${YLW}⚠  Preflight:${RST} haiku flagged a potential issue with your prompt."
+      echo -e "${YLW}⚠  Preflight:${RST} ${CHK_MODEL} flagged a potential issue with your prompt."
       echo ""
       echo "$PREFLIGHT_MSG" | sed 's/^/   /'
       echo ""
-      read -r -p "Would you like haiku to suggest improvements to your prompt? [y/N] " _suggest
+      read -r -p "Would you like ${CHK_MODEL} to suggest improvements to your prompt? [y/N] " _suggest
       if [[ "${_suggest}" =~ ^[Yy]$ ]]; then
         echo ""
         SUGGEST_META=$(cat <<RALPH_SUGGEST_EOF
@@ -382,8 +385,8 @@ ${PROMPT}
 --- END USER PROMPT ---
 RALPH_SUGGEST_EOF
 )
-        claude -p "$SUGGEST_META" --model haiku --max-turns 1 --output-format text 2>/dev/null \
-          || echo -e "${YLW}(haiku advice unavailable)${RST}"
+        claude -p "$SUGGEST_META" --model "$CHK_MODEL" --max-turns 1 --output-format text 2>/dev/null \
+          || echo -e "${YLW}(${CHK_MODEL} advice unavailable)${RST}"
         echo ""
       fi
       read -r -p "Continue anyway? [y/N] " _confirm

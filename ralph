@@ -11,7 +11,7 @@ set -euo pipefail
 
 # ── defaults ──────────────────────────────────────────────────────────
 MAX_ITERATIONS=50
-MAX_TURNS=50
+MAX_TURNS=100
 PROMPT=""
 VERBOSE=1
 PROMISE_TAG="RALPH_LOOP_COMPLETE"
@@ -48,7 +48,7 @@ Required (for new loops):
 
 Options:
   -i, --max-iterations N    Max loop iterations (default: 50)
-  -m, --max-turns N         Max turns per iteration (default: 30)
+  -m, --max-turns N         Max turns per iteration (default: 100)
   --model MODEL             Claude model to use (default: sonnet)
   --chk-model MODEL         Model for preflight/dry-run checks (default: haiku)
   -s, --session NAME        tmux session name (default: ralph-XXXX)
@@ -218,7 +218,7 @@ if [[ "${RALPH_ROLE:-}" == "status" ]]; then
       if [[ -n "${ST_ITER_START:-}" && "${ST_STATE:-}" == "running" ]]; then
         IE=$(( NOW - ST_ITER_START ))
         TURNS=$(cat "$TURN_FILE" 2>/dev/null); TURNS="${TURNS:-0}"
-        ITER_ELAPSED=" │ this iter: $(printf '%dm%02ds' $((IE/60)) $((IE%60))), ${TURNS}/${ST_MAX_TURNS:-50}t"
+        ITER_ELAPSED=" │ this iter: $(printf '%dm%02ds' $((IE/60)) $((IE%60))), ${TURNS}/${ST_MAX_TURNS:-100}t"
       fi
 
       LAST_FMT=""
